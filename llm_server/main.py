@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
+
 import requests
 
 app = FastAPI()
@@ -21,22 +22,24 @@ class TripRequest(BaseModel):
 
 def build_prompt(req: TripRequest) -> str:
     interests_text = ", ".join(req.interests) if req.interests else "none"
+
     return f"""
-You are a helpful travel planner.
+You are a travel planner.
 
-Origin city: {req.origin}
-Destination city: {req.destination}
-Start date: {req.start_date}
-End date: {req.end_date}
-Interests: {interests_text}
-Pace: {req.pace} (relaxed/normal/tight)
+Trip:
+- From: {req.origin}
+- To: {req.destination}
+- Dates: {req.start_date} → {req.end_date}
+- Interests: {interests_text}
+- Pace: {req.pace} (relaxed/normal/tight)
 
-Task:
-- Create a detailed day-by-day itinerary from start date to end date.
-- For EACH day, include 3 sections: Morning, Afternoon, Evening.
-- Each activity should have 1-2 sentences description.
-- Focus on the interests when choosing activities.
-- Output format exactly like this (no extra text before or after):
+Create a short day-by-day itinerary.
+
+Rules:
+- For EACH day: 3 lines only: Morning, Afternoon, Evening.
+- Each line: max 20 words, very concise.
+- Focus on interests when choosing activities.
+- No extra explanations before or after, just this format:
 
 Day 1 - YYYY-MM-DD
 Morning: ...
@@ -49,12 +52,14 @@ Afternoon: ...
 Evening: ...
 """
 
-
 def call_ollama(prompt: str, model_name: str) -> str:
     payload = {
         "model": model_name,
         "prompt": prompt,
         "stream": False,
+        "options": {
+            "num_predict": 350  # giới hạn tối đa 350 tokens để trả nhanh hơn
+        },
     }
     resp = requests.post(OLLAMA_API_URL, json=payload, timeout=180)
     resp.raise_for_status()
@@ -67,3 +72,53 @@ def generate_itinerary(req: TripRequest):
     prompt = build_prompt(req)
     itinerary_text = call_ollama(prompt, req.model)
     return {"itinerary": itinerary_text}
+
+from datetime import date
+
+def build_prompt(req: TripRequest) -> str:
+    interests_text = ", ".join(req.interests) if req.interests else "none"
+
+    start = date.fromisoformat(req.start_date)
+    end = date.fromisoformat(req.end_date)
+    day_count = (end - start).days + 1
+
+    if day_count == 1:
+        day_rule = """
+- This is a SINGLE-DAY trip.
+- Only output **Day 1**. Do NOT create Day 2 or later.
+"""
+    else:
+        day_rule = f"""
+- This trip has {day_count} days.
+- Output exactly {day_count} days: Day 1, Day 2, ..., Day {day_count}.
+"""
+
+    return f"""
+You are a helpful travel planner.
+
+Trip information:
+- Origin city: {req.origin}
+- Destination city: {req.destination}
+- Start date: {req.start_date}
+- End date: {req.end_date}
+- Interests: {interests_text}
+- Pace: {req.pace} (relaxed/normal/tight)
+
+Task:
+- Create a short, clear day-by-day itinerary from start date to end date.
+- Each day must have Morning, Afternoon, Evening activities.
+
+{day_rule}
+
+Output format (no extra explanation before or after):
+
+Day 1 - YYYY-MM-DD
+Morning: ...
+Afternoon: ...
+Evening: ...
+
+Day 2 - YYYY-MM-DD
+Morning: ...
+Afternoon: ...
+Evening: ...
+"""
